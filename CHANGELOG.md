@@ -1,5 +1,21 @@
 # Changelog
 
+## 🚀 Release `@addon-core/inject-script` v0.3.1 (2025-10-21)
+
+
+### 🐛 Bug Fixed
+
+* handle exceptions when checking for Firefox compatibility ([4a1c250](https://github.com/addon-stack/inject-script/commit/4a1c250bfcebb330efd8a8214390dbee11ce713f))
+
+
+
+
+
+### 🙌 Contributors
+
+- [Addon Stack](addonbonedev@gmail.com) — 2 commits
+- [Rostyslav Nihrutsa](rostyslav.nihrutsa@gmail.com) — 1 commits
+
 ## 🚀 Release `@addon-core/inject-script` v0.3.0 (2025-10-08)
 
 
