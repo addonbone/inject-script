@@ -38,8 +38,11 @@ export default class extends AbstractInjectScript {
 
         // Firefox does not support `documentIds` in the target
         // getBrowserInfo is only available in firefox
-        // @ts-expect-error
-        const isFirefox = !!browser().runtime.getBrowserInfo;
+        let isFirefox = false;
+        try {
+            // @ts-expect-error
+            isFirefox = !!browser().runtime.getBrowserInfo;
+        } catch (_e) {}
 
         if (!isFirefox) {
             const documentIds = this.documentIds;
