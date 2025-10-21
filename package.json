@@ -53,9 +53,8 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "lint:fix:unsafe": "biome check --write --unsafe .",
-    "test": "jest",
+    "test": "jest --bail --passWithNoTests",
     "test:ci": "jest --ci --passWithNoTests --coverage",
-    "test:related": "jest --bail --passWithNoTests --findRelatedTests",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "release": "release-it"
   },
