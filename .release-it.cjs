@@ -141,8 +141,9 @@ module.exports = () => {
             publish: true,
             skipChecks: true,
             provenance: true,
+            access: "public",
+            registry: "https://registry.npmjs.org/",
             versionArgs: ["--no-git-tag-version"],
-            publishArgs: ["--access", "public"],
         },
 
         plugins: {
