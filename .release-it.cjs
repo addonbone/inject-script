@@ -139,8 +139,10 @@ module.exports = () => {
 
         npm: {
             publish: true,
+            skipChecks: true,
+            provenance: true,
             versionArgs: ["--no-git-tag-version"],
-            publishArgs: ["--provenance", "--access", "public"],
+            publishArgs: ["--access", "public"],
         },
 
         plugins: {

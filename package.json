@@ -17,7 +17,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/addon-stack/inject-script"
+    "url": "git+https://github.com/addon-stack/inject-script.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "homepage": "https://github.com/addon-stack/inject-script",
   "bugs": {
