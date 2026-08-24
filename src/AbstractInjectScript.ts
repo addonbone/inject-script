@@ -1,36 +1,109 @@
-import type {InjectScriptContract, InjectScriptOptions} from "./types";
+import {InjectScriptDeliveryError, InjectScriptTimeoutError} from "./errors";
+import {
+    validateInjectScriptArguments,
+    validateInjectScriptExecutionOptions,
+    validateInjectScriptFiles,
+    validateInjectScriptOptions,
+    validateInjectScriptTarget,
+} from "./validation";
+import type {
+    InjectScriptContract,
+    InjectScriptExecutionOptions,
+    InjectScriptOptions,
+    InjectScriptResult,
+    InjectScriptTarget,
+    NonEmptyReadonlyArray,
+} from "./types";
 
-type Awaited<T> = chrome.scripting.Awaited<T>;
-type InjectionResult<T> = chrome.scripting.InjectionResult<T>;
+const DEFAULT_TIMEOUT_MS = 4_000;
 
 export default abstract class implements InjectScriptContract {
-    public constructor(protected _options: InjectScriptOptions) {}
+    protected _target: InjectScriptTarget;
+    protected _execution: InjectScriptExecutionOptions;
 
-    public options(options: Partial<InjectScriptOptions>): this {
-        this._options = {...this._options, ...options, tabId: options.tabId ?? this._options.tabId};
+    public constructor(options: InjectScriptOptions) {
+        const normalized = validateInjectScriptOptions(options);
+
+        this._target = normalized.target;
+        this._execution = normalized.execution;
+    }
+
+    public target(target: InjectScriptTarget): this {
+        const normalizedTarget = validateInjectScriptTarget(target);
+
+        this.assertAdapterSupport(normalizedTarget, this._execution);
+        this._target = normalizedTarget;
 
         return this;
     }
 
-    public abstract run<A extends any[], R>(func: (...args: A) => R, args?: A): Promise<InjectionResult<Awaited<R>>[]>;
+    public options(options: Partial<InjectScriptExecutionOptions>): this {
+        const normalizedOptions = validateInjectScriptExecutionOptions(options);
+        const nextExecution = {...this._execution, ...normalizedOptions};
 
-    public abstract file(files: string | string[]): Promise<void>;
+        this.assertAdapterSupport(this._target, nextExecution);
+        this._execution = nextExecution;
 
-    protected get frameIds(): number[] | undefined {
-        const {frameId} = this._options;
-
-        return typeof frameId === "number" ? [frameId] : typeof frameId !== "boolean" ? frameId : undefined;
+        return this;
     }
 
-    protected get allFrames(): boolean | undefined {
-        const {frameId} = this._options;
+    public abstract run<A extends readonly unknown[], R>(
+        func: (...args: A) => R,
+        args?: A
+    ): Promise<InjectScriptResult<Awaited<R>>[]>;
 
-        return typeof frameId === "boolean" ? frameId : undefined;
+    public abstract file(files: string | NonEmptyReadonlyArray<string>): Promise<void>;
+
+    protected abstract assertAdapterSupport(target: InjectScriptTarget, execution: InjectScriptExecutionOptions): void;
+
+    protected validateArguments(args: readonly unknown[] | undefined): void {
+        validateInjectScriptArguments(args);
     }
 
-    protected get matchAboutBlank(): boolean {
-        const {matchAboutBlank} = this._options;
+    protected normalizeFiles(files: string | NonEmptyReadonlyArray<string>): string[] {
+        return validateInjectScriptFiles(files);
+    }
 
-        return typeof matchAboutBlank === "boolean" ? matchAboutBlank : true;
+    protected snapshotTarget(): InjectScriptTarget {
+        return validateInjectScriptTarget(this._target);
+    }
+
+    protected snapshotExecution(): InjectScriptExecutionOptions {
+        return {...this._execution};
+    }
+
+    protected get timeoutMs(): number {
+        return this._execution.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    }
+
+    protected async withTimeout<T>(task: Promise<T>, target: InjectScriptTarget, timeoutMs: number): Promise<T> {
+        return new Promise<T>((resolve, reject) => {
+            let settled = false;
+
+            const finish = (callback: () => void): void => {
+                if (settled) return;
+
+                settled = true;
+                clearTimeout(timeoutId);
+                callback();
+            };
+
+            const timeoutId = setTimeout(() => {
+                finish(() => reject(new InjectScriptTimeoutError(target, timeoutMs)));
+            }, timeoutMs);
+
+            task.then(
+                value => finish(() => resolve(value)),
+                error => finish(() => reject(error))
+            );
+        });
+    }
+
+    protected deliveryError(target: InjectScriptTarget, error: unknown): Error {
+        if (error instanceof InjectScriptDeliveryError || error instanceof InjectScriptTimeoutError) {
+            return error;
+        }
+
+        return new InjectScriptDeliveryError(target, error);
     }
 }

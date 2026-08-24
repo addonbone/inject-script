@@ -13,7 +13,7 @@ Please report security issues privately and avoid opening public issues with exp
 
 When reporting, please include (if possible):
 
-- Affected version(s) and package name (adnbn) and how you installed it
+- Affected version(s), package name (`@addon-core/inject-script`), and how you installed it
 - Environment details (OS, Node.js version, browser/runtime, relevant configs)
 - Steps to reproduce and a minimal proof of concept (PoC)
 - Impact assessment (what an attacker can do and likely severity)

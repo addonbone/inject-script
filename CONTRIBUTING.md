@@ -1,172 +1,192 @@
-<!--
-  CONTRIBUTING.md
-  Guidelines for contributing to the @addon-core/inject-script project.
--->
-
 # Contributing to @addon-core/inject-script
 
-Thank you for taking the time to contribute! This document describes our workflow, quality gates, commit conventions, and release process. By participating, you agree to follow our [Code of Conduct](CODE_OF_CONDUCT.md).
+Thank you for helping improve `@addon-core/inject-script`.
 
-## Table of Contents
+This package provides one typed script-injection contract across Manifest V2 and Manifest V3. Contributions should preserve that cross-manifest boundary, keep unsupported capabilities explicit, and include verification for every affected adapter.
 
-1. Reporting Bugs
-2. Suggesting Enhancements
-3. Branching Model & Workflow
-4. Development Setup
-5. Quality Gates (Lint, Format, Types, Tests)
-6. Commit Messages (Conventional Commits)
-7. Submitting a Pull Request
-8. Releases
-9. Code of Conduct
-10. Security
-11. License
+By participating, you agree to follow our [Code of Conduct](CODE_OF_CONDUCT.md). Report vulnerabilities through the private process described in [SECURITY.md](SECURITY.md), not through a public issue.
 
----
+## Development workflow
 
-## Reporting Bugs
+The repository uses a simplified GitFlow model:
 
-To file a clear, actionable bug report:
+- `main` contains released code.
+- `develop` is the integration branch and the normal pull-request target.
+- `feature/<short-name>` branches start from `develop`.
+- Releases are prepared by merging `develop` into `main`.
+- After a successful release, the workflow syncs `main` back into `develop`.
 
-1. Search existing issues to avoid duplicates.
-2. If not found, open a new issue and include:
-   - Descriptive title and summary
-   - Steps to reproduce (minimal repro if possible)
-   - Expected vs. actual behavior
-   - Environment details (OS, browser, Node.js/npm)
-   - Relevant logs, stack traces, or screenshots
+Create a branch from the latest `develop`:
 
-## Suggesting Enhancements
-
-When proposing an enhancement:
-
-1. Check open issues/PRs for similar ideas.
-2. Open a new issue describing:
-   - Motivation and use case
-   - Proposed API/UX (code snippets welcome)
-   - Alternatives considered and trade-offs
-
-## Branching Model & Workflow
-
-We use a simplified GitFlow:
-
-- Default branch: `develop`
-- Feature branches: `feature/<short-name>` cut from `develop`
-- Regular work: open PRs into `develop`
-- Releases: open a PR from `develop` to `main`
-  - When the PR is merged, a release pipeline runs automatically on `main`
-  - After publishing, `main` is synced back into `develop`
-
-See the workflows in `.github/workflows/`:
-- CI: `.github/workflows/ci.yml` (runs on pushes/PRs to `develop` and `feature/**`)
-- Release: `.github/workflows/release.yml` (runs on push to `main` and on manual dispatch)
-
-## Development Setup
-
-1. Clone the repository:
-   ```bash
-   git clone git@github.com:addon-stack/inject-script.git
-   cd inject-script
-   ```
-2. Install dependencies (Node.js 20+ recommended):
-   ```bash
-   npm install
-   ```
-3. Useful scripts:
-   - `npm run dev` — build in watch mode (tsup)
-   - `npm run build` — production build (tsup)
-   - `npm run format` — format with Biome
-   - `npm run format:check` — check formatting only
-   - `npm run lint` — Biome lint + format checks
-   - `npm run lint:fix` — autofix safe issues
-   - `npm run lint:fix:unsafe` — autofix including unsafe transforms
-   - `npm run typecheck` — TypeScript type checking
-   - `npm run test` — run tests (Jest)
-   - `npm run test:ci` — CI-friendly tests with coverage
-   - `npm run test:related` — run tests related to staged/changed files
-   - `npm run release` — run release-it locally
-
-## Quality Gates (Lint, Format, Types, Tests)
-
-We treat code quality seriously and run multiple static checks locally and in CI:
-
-- Biome (formatter + linter) — configured via `biome.json`
-  - `npm run format` / `npm run lint`
-- TypeScript type checks — `npm run typecheck`
-- Unit tests (Jest) — `npm run test`
-- Pre-commit automation (`lint-staged` via Husky pre-commit hook):
-  - For `src/**/*.{js,jsx,ts,tsx,cjs,mjs}`: `biome check --write --unsafe` then `npm run test:related`
-  - For `*.{json,css,scss,html}`: `biome format --write`
-- CI mirrors this pipeline (lint → typecheck → test → build) and uploads coverage artifacts
-
-Please ensure all commands above pass before opening a PR.
-
-## Commit Messages (Conventional Commits)
-
-All commits MUST follow [Conventional Commits](https://www.conventionalcommits.org/):
-
+```bash
+git switch develop
+git pull --ff-only
+git switch -c feature/<short-name>
 ```
+
+## Local setup
+
+Node.js 20 is the default CI environment. The full release gate also exercises Node.js 18, 20, and 22.
+
+```bash
+git clone git@github.com:addon-stack/inject-script.git
+cd inject-script
+npm ci
+```
+
+Useful commands:
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Build continuously with tsup |
+| `npm run build` | Create ESM, CJS, and declaration outputs |
+| `npm run format` | Format supported files with Biome |
+| `npm run format:check` | Check formatting without writing |
+| `npm run lint` | Run Biome formatting and lint checks |
+| `npm run lint:fix` | Apply safe Biome fixes |
+| `npm run lint:fix:unsafe` | Apply safe and unsafe Biome fixes |
+| `npm run typecheck` | Type-check package sources |
+| `npm run test:types` | Type-check public API contract fixtures |
+| `npm run test` | Build and run the Jest suite |
+| `npm run test:ci` | Build and run Jest with coverage |
+| `npm run release` | Perform a real maintainer release through release-it |
+
+`npm run release` is not a dry run. Do not execute it unless you are intentionally publishing a release and have the required maintainer access.
+
+## Contribution guidelines
+
+Keep changes focused and preserve the package's public design:
+
+- Every operation has one explicit `target`.
+- Target selectors remain mutually exclusive.
+- Unsupported targets and options fail explicitly; they are never removed silently.
+- `run()` returns package-owned per-frame outcomes instead of raw browser results.
+- Callback arguments and results remain strictly JSON-compatible.
+- MV2 injected code must stay self-contained because imports and caller closures do not cross the injection boundary.
+- Runtime code must not introduce `eval` or `new Function`.
+- Frame discovery, RPC fan-out, concurrency queues, and application-specific aggregation remain outside this package.
+
+When changing public behavior, update the implementation, types, tests, and README together.
+
+## Tests
+
+The test suite covers three different contracts:
+
+- `tests/types.test.ts` verifies compile-time API behavior.
+- `tests/inject-script.test.cjs` verifies MV2/MV3 runtime behavior against the built package.
+- `tests/release-it.test.cjs` verifies release versioning policy.
+
+For adapter changes, cover the affected combinations where relevant:
+
+- Manifest V2 and Manifest V3;
+- callback-based `global.chrome` and Promise-based `global.browser`;
+- top frame, `allFrames`, explicit `frameIds`, and `documentIds`;
+- `fulfilled`, `rejected`, and `unknown` outcomes;
+- valid JSON data and runtime-only invalid values;
+- preparation errors, native delivery failures, and timeouts.
+
+MV2 payload tests execute the generated code in a separate process. Keep this path covered when changing serialized injected logic.
+
+## Quality gates
+
+Before opening a pull request, run:
+
+```bash
+npm run lint
+npm run typecheck
+npm run test:ci
+```
+
+`test:ci` already runs type-contract tests and a production build before Jest.
+
+Local hooks provide additional protection:
+
+- `pre-commit` runs `lint-staged`, which formats and lints supported staged source/config files.
+- `commit-msg` validates Conventional Commits with commitlint.
+- `pre-push` runs `typecheck` and the full `test:ci` command.
+
+GitHub Actions repeats lint, typecheck, tests, coverage, and production build checks. Release runs use the full operating-system and Node.js matrix.
+
+## Commit messages
+
+All commits must follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+```text
 <type>(optional scope): <short summary>
 
 [optional body]
-[optional footer(s)]
+[optional footer]
 ```
 
-Common types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`.
+Common examples:
 
-Examples:
-- `feat(core): add MV3 documentId targeting`
-- `fix(v2): handle timeout cleanup`
-- `docs: update README with API examples`
+```text
+feat(target): add document targeting
+fix(mv2): preserve partial timeout results
+refactor(results): centralize native normalization
+test(types): cover interface arguments
+docs: simplify the quick start
+```
 
-Enforcement:
-- We use Husky + commitlint. The `commit-msg` hook runs commitlint and blocks non‑conforming messages.
-- Config: `.commitlintrc.json` extends `@commitlint/config-conventional`.
+Use `!` or a `BREAKING CHANGE:` footer for an incompatible public change:
 
-Tip: for complex changes, prefer multiple small commits over one large commit.
+```text
+feat!: replace the legacy target options
+```
 
-## Submitting a Pull Request
+Commit messages are enforced by `.husky/commit-msg` and `.commitlintrc.json`.
 
-1. Create a branch from `develop`:
-   ```bash
-   git checkout -b feature/<short-name>
-   ```
-2. Make your changes under `src/` and update docs/tests if needed.
-3. Run quality gates locally:
-   ```bash
-   npm run lint && npm run typecheck && npm run test && npm run build
-   ```
-4. Commit using Conventional Commits. The Husky hook will validate your message.
-5. Push and open a PR into `develop`.
-6. PR checklist:
-   - [ ] Lint, types, and tests pass in CI
-   - [ ] Docs updated (README/CONTRIBUTING if applicable)
-   - [ ] Linked related issues (e.g., `Closes #123`)
-   - [ ] Clear description of changes and motivation
+## Versioning policy
 
-Maintainers perform release PRs from `develop` → `main` (see below).
+Release versions are derived from commit history by `release-it` and `@release-it/conventional-changelog`:
+
+- A breaking change increments major at `1.x` and newer.
+- A breaking change increments minor while the package is on `0.x`.
+- `feat` and `revert` increment minor.
+- `fix`, `perf`, `refactor`, and `ci` increment patch.
+- `docs`, `test`, `build`, `chore`, and `style` do not trigger a release by themselves.
+- When several changes are present, the highest applicable increment wins.
+
+Do not edit released changelog entries manually. `CHANGELOG.md` is generated from Conventional Commits during release.
+
+## Pull requests
+
+Open regular pull requests against `develop` and include:
+
+- a concise explanation of the problem and the chosen solution;
+- tests for changed behavior;
+- documentation for public API or contract changes;
+- migration notes for breaking changes;
+- links to related issues when available.
+
+Pull-request checklist:
+
+- [ ] The change is focused and contains no unrelated edits.
+- [ ] MV2 and MV3 implications have been considered.
+- [ ] `npm run lint` passes.
+- [ ] `npm run typecheck` passes.
+- [ ] `npm run test:ci` passes.
+- [ ] Public documentation is updated when necessary.
+- [ ] Commit messages follow Conventional Commits.
+
+Maintainers create release pull requests from `develop` into `main`.
 
 ## Releases
 
-Releases are automated via GitHub Actions + `release-it`:
+The release workflow runs on pushes to `main` and through manual dispatch:
 
-- Trigger: merge/push to `main` (or manual dispatch with inputs)
-- Steps (see `.github/workflows/release.yml`):
-  1. Run the full CI matrix
-  2. Execute `release-it` in CI (`--ci`) with conventional changelog
-  3. Create a Git tag and GitHub Release
-  4. Publish to npm using `NPM_TOKEN` and selected dist-tag
-  5. Sync `main` back into `develop`
+1. Run the full CI matrix.
+2. Calculate the next version from Conventional Commits unless an exact version was provided.
+3. Update `package.json` and `CHANGELOG.md`.
+4. Create the release commit and Git tag.
+5. Create a GitHub Release.
+6. Publish the public npm package with provenance through trusted publishing.
+7. Sync `main` back into `develop`.
 
-Local dry-run is available via `npm run release` (requires proper credentials for a real publish).
+The workflow accepts optional prerelease and npm dist-tag inputs. It uses GitHub OIDC permissions for npm provenance and does not depend on a documented contributor `NPM_TOKEN` flow.
 
-## Code of Conduct
-
-Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md) in all interactions.
-
-## Security
-
-If you discover a vulnerability, please follow our [Security Policy](SECURITY.md) and avoid disclosing publicly until fixed.
+Publishing is a maintainer operation. Contributors only need to prepare a complete, verified pull request into `develop`.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the project’s MIT License. See [LICENSE.md](LICENSE.md).
+By contributing, you agree that your contributions are licensed under the project's [MIT License](LICENSE.md).
