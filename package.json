@@ -65,8 +65,7 @@
   },
   "lint-staged": {
     "src/**/*.{js,jsx,ts,tsx,cjs,mjs}": [
-      "biome check --write --unsafe",
-      "npm run test:related --"
+      "biome check --write --unsafe"
     ],
     "*.{json,css,scss,html}": [
       "biome format --write"

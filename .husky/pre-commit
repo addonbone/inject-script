@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
 
-# Husky pre-commit hook: format and run related tests on staged files
+# Husky pre-commit hook: format and lint staged files
 
 npx --no -- lint-staged

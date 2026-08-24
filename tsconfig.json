@@ -14,13 +14,10 @@
     "noEmitOnError": false,
     "noEmit": false,
     "skipLibCheck": true,
-    "noImplicitAny": false,
     "typeRoots": [
       "node_modules/@types"
     ],
-    "baseUrl": "./src",
     "isolatedModules": true,
-    "allowJs": true,
     "resolveJsonModule": true,
     "sourceMap": true,
     "declarationMap": true
