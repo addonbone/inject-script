@@ -1,7 +1,7 @@
 {
   "name": "@addon-core/inject-script",
   "version": "0.3.1",
-  "description": "A lightweight, TypeScript-ready library for injecting JavaScript functions or external scripts into Chrome extension tabs and frames (Manifest V2 & V3).",
+  "description": "A lightweight, TypeScript-ready library for injecting JavaScript functions or external scripts into browser extension tabs and frames (Manifest V2 & V3).",
   "keywords": [
     "browser",
     "addon",
@@ -28,10 +28,7 @@
     "url": "https://github.com/addon-stack/inject-script/issues"
   },
   "license": "MIT",
-  "author": "Addon Stack <addonbonedev@gmail.com>",
-  "contributors": [
-    "Anjey Tsibylskij (https://github.com/atldays)"
-  ],
+  "author": "Anjey Tsibylskij (https://github.com/atldays)",
   "type": "module",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
