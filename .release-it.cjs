@@ -107,7 +107,71 @@ const types = new Map([
 const normalizeRepoUrl = url => url.replace(/^git\+/, "").replace(/\.git$/, "");
 const repoUrl = pkg?.repository?.url ? normalizeRepoUrl(pkg.repository.url) : null;
 
-module.exports = () => {
+const breakingChangePattern = /\bBREAKING(?: |-)?CHANGE\b/i;
+
+function hasBreakingChange(commit) {
+    if (commit.breaking) {
+        return true;
+    }
+
+    const type = String(commit.type || "").trim();
+
+    if (type.endsWith("!")) {
+        return true;
+    }
+
+    if (typeof commit.header === "string" && /^\w+(?:\([^)]+\))?!:/.test(commit.header)) {
+        return true;
+    }
+
+    if (
+        commit.notes?.some(note =>
+            [note.title, note.text].some(value => typeof value === "string" && breakingChangePattern.test(value))
+        )
+    ) {
+        return true;
+    }
+
+    return typeof commit.footer === "string" && breakingChangePattern.test(commit.footer);
+}
+
+function whatBump(commits, currentVersion = pkg.version) {
+    let isBreaking = false;
+    let isMinor = false;
+    let isPatch = false;
+
+    for (const commit of commits) {
+        if (hasBreakingChange(commit)) {
+            isBreaking = true;
+        }
+
+        const type = String(commit.type || "")
+            .trim()
+            .toLowerCase()
+            .replace(/!+$/, "");
+
+        if (["feat", "revert"].includes(type)) {
+            isMinor = true;
+        }
+
+        if (["fix", "perf", "refactor", "ci"].includes(type)) {
+            isPatch = true;
+        }
+    }
+
+    if (isBreaking) {
+        const currentMajor = Number.parseInt(String(currentVersion).replace(/^v/i, "").split(".")[0], 10);
+
+        return {level: Number.isNaN(currentMajor) || currentMajor >= 1 ? 0 : 1};
+    }
+
+    if (isMinor) return {level: 1};
+    if (isPatch) return {level: 2};
+
+    return null;
+}
+
+const createReleaseConfig = () => {
     const contributors = getContributors();
 
     return {
@@ -168,37 +232,7 @@ module.exports = () => {
                     contributors,
                 },
 
-                recommendedBumpOpts: {
-                    preset: "conventionalcommits",
-                    whatBump: commits => {
-                        let isMajor = false;
-                        let isMinor = false;
-                        let isPatch = false;
-
-                        for (const commit of commits) {
-                            if (commit.notes?.some(n => /BREAKING CHANGE/i.test(n.title || n.text || ""))) {
-                                isMajor = true;
-                                break;
-                            }
-
-                            const type = (commit.type || "").toLowerCase();
-
-                            if (type === "feat") {
-                                isMinor = true;
-                            }
-
-                            if (["fix", "perf", "refactor", "ci"].includes(type)) {
-                                isPatch = true;
-                            }
-                        }
-
-                        if (isMajor) return {level: 0};
-                        if (isMinor) return {level: 1};
-                        if (isPatch) return {level: 2};
-
-                        return null;
-                    },
-                },
+                whatBump,
                 writerOpts: {
                     headerPartial:
                         "## 🚀 Release {{#if name}}`{{name}}` {{else}}{{#if @root.pkg}}`{{@root.pkg.name}}` {{/if}}{{/if}}v{{version}} ({{date}})\n\n",
@@ -257,3 +291,5 @@ module.exports = () => {
         },
     };
 };
+
+module.exports = Object.assign(createReleaseConfig, {whatBump});
