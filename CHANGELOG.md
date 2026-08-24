@@ -1,5 +1,77 @@
 # Changelog
 
+## 🚀 Release `@addon-core/inject-script` v0.4.0 (2026-08-24)
+
+### 💥 Breaking Changes
+
+* replace flat tabId/frameId/documentId options with a
+required nested target. Rename timeFallback to timeoutMs and make run()
+resolve to InjectScriptResult<T>[]. options() now accepts execution options
+only. Callback arguments and results must be JSON-compatible, unsupported
+capabilities throw typed package errors, and file arrays must be non-empty.
+
+
+### ✨ Features
+
+* redesign the cross-manifest injection contract ([938cf0d](https://github.com/addon-stack/inject-script/commit/938cf0d732979501dfa9116e11d155744f54395a))
+
+  - require one explicit and mutually exclusive target
+  - normalize MV2 and MV3 execution into per-frame outcomes
+  - enforce JSON-compatible callback arguments and results
+  - expose typed delivery, validation, and timeout errors
+  - add runtime and compile-time contract coverage
+  - update @addon-core/browser and remove nanoid
+
+
+
+### 🐛 Bug Fixed
+
+* **release:** update `.release-it.cjs` with public access and registry URL ([34d7ddc](https://github.com/addon-stack/inject-script/commit/34d7ddc3a43b070476adcce2a30df1c59f5c2561))
+
+
+
+
+### 📝 Documentation
+
+* refresh contribution and security guidance ([9fe5645](https://github.com/addon-stack/inject-script/commit/9fe56457f8d4a949bcf5ee79e58240868f6e214f))
+
+
+* rewrite package documentation for the new API ([4280e5c](https://github.com/addon-stack/inject-script/commit/4280e5ce66673dde4c66a4f26bc2c5a547a9f74a))
+
+
+
+
+### 🤖 CI
+
+* **release:** keep breaking releases minor before 1.0 ([750096c](https://github.com/addon-stack/inject-script/commit/750096c49b6b246e63a75690f10c96bdca0efc3f))
+
+
+* **release:** update workflows, package config, and .gitignore for npm improvements ([010304d](https://github.com/addon-stack/inject-script/commit/010304d8f505f9128f7f1c2d5764e678d1542362))
+
+
+
+
+### 🧹 Chores
+
+* **tooling:** align local quality gates with CI ([cca919f](https://github.com/addon-stack/inject-script/commit/cca919f5b50bf8bbd0b4ab4d020c1acdc193af7f))
+
+
+* update configurations and scripts for consistency and accuracy ([fd3f230](https://github.com/addon-stack/inject-script/commit/fd3f2307b28f3c8b43567c4ad4ead3409e326060))
+
+  - Remove `.prettierignore` as Biome replaces Prettier for linting and formatting.
+  - Update `.mailmap` with enhanced contributor tracking fields.
+  - Add emoji to `test` in `.release-it.cjs` configuration for consistency.
+  - Modify `test` script in `package.json` to include `--bail` and handle no tests gracefully.
+  - Remove unused `test:related` script from `package.json`.
+
+
+
+
+### 🙌 Contributors
+
+- [Anjey Tsibylskij](https://github.com/atldays) (@atldays) — 8 commits
+- [Addon Bone](addonbonedev@gmail.com) — 1 commits
+
 ## 🚀 Release `@addon-core/inject-script` v0.3.1 (2025-10-21)
 
 
