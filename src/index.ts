@@ -3,8 +3,39 @@ import InjectScriptV2 from "./InjectScriptV2";
 import InjectScriptV3 from "./InjectScriptV3";
 import type {InjectScriptContract, InjectScriptOptions} from "./types";
 
-export type {InjectScriptContract, InjectScriptOptions};
+export {
+    InjectScriptBaseError,
+    InjectScriptDeliveryError,
+    InjectScriptTimeoutError,
+    InvalidInjectScriptArgumentsError,
+    InvalidInjectScriptFilesError,
+    InvalidInjectScriptOptionsError,
+    InvalidInjectScriptTargetError,
+    UnsupportedInjectScriptOptionError,
+    UnsupportedInjectScriptTargetError,
+} from "./errors";
+export type {InjectScriptErrorCode, InjectScriptTimeoutDetails} from "./errors";
+export type {
+    InjectScriptAllFramesTarget,
+    InjectScriptContract,
+    InjectScriptDocumentsTarget,
+    InjectScriptExecutionOptions,
+    InjectScriptFramesTarget,
+    InjectScriptFunctionResult,
+    InjectScriptOptions,
+    InjectScriptResult,
+    InjectScriptResultTarget,
+    InjectScriptTarget,
+    InjectScriptTopFrameTarget,
+    JsonCompatible,
+    JsonPrimitive,
+    JsonValue,
+    NonEmptyReadonlyArray,
+    SerializedInjectScriptError,
+} from "./types";
 
-export default (options: InjectScriptOptions): InjectScriptContract => {
+export const injectScript = (options: InjectScriptOptions): InjectScriptContract => {
     return isManifestVersion3() ? new InjectScriptV3(options) : new InjectScriptV2(options);
 };
+
+export default injectScript;

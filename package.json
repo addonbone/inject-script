@@ -57,8 +57,9 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "lint:fix:unsafe": "biome check --write --unsafe .",
-    "test": "jest --bail --passWithNoTests",
-    "test:ci": "jest --ci --passWithNoTests --coverage",
+    "test": "npm run test:types && npm run build && jest --bail --passWithNoTests",
+    "test:ci": "npm run test:types && npm run build && jest --ci --passWithNoTests --coverage",
+    "test:types": "tsc -p tests/tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "release": "release-it"
   },
@@ -71,16 +72,21 @@
       "biome format --write"
     ]
   },
+  "jest": {
+    "coverageProvider": "v8",
+    "testMatch": [
+      "<rootDir>/tests/**/*.test.cjs"
+    ]
+  },
   "dependencies": {
-    "@addon-core/browser": "^0.2.1",
-    "nanoid": "^5.1.5"
+    "@addon-core/browser": "^0.7.2"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.2.4",
     "@commitlint/cli": "^20.0.0",
     "@commitlint/config-conventional": "^20.0.0",
     "@release-it/conventional-changelog": "^10.0.1",
-    "@types/chrome": "^0.1.12",
+    "@types/chrome": "^0.2.7",
     "@types/jest": "^30.0.0",
     "husky": "^9.1.7",
     "jest": "^30.1.3",
