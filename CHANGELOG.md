@@ -1,5 +1,42 @@
 # Changelog
 
+## 🚀 Release `@addon-core/inject-script` v0.5.0 (2026-08-25)
+
+### 💥 Breaking Changes
+
+* run() now returns success/failure target outcomes instead of
+fulfilled/rejected/unknown records. Successful values moved from result to value,
+and target delivery and timeout failures resolve in the result array. The public
+InjectScriptTimeoutDetails type and timeout partialResults fields were removed.
+
+
+### ✨ Features
+
+* return best-effort target outcomes from run ([d31cfa1](https://github.com/addon-stack/inject-script/commit/d31cfa1cd5e793990786dfcec8e80aa91900ca32))
+
+  Classify execution, delivery, timeout, target-gone, and unobservable failures
+  per target. Preserve explicit target order and user activation, and share one MV2
+  response listener per batch.
+
+
+
+### 📝 Documentation
+
+* align contributor guidance with target isolation ([ac509d8](https://github.com/addon-stack/inject-script/commit/ac509d8cd777f371a78f76567eb283e6b3f35c7f))
+
+
+* explain best-effort target outcomes ([e61ed23](https://github.com/addon-stack/inject-script/commit/e61ed23e1c5bd8f46ed588a9b998b71587415834))
+
+  Document result kinds, per-target failures, explicit target ordering, and the
+  linear fan-out cost across MV2 and MV3.
+
+
+
+
+### 🙌 Contributors
+
+- [Anjey Tsibylskij](https://github.com/atldays) (@atldays) — 4 commits
+
 ## 🚀 Release `@addon-core/inject-script` v0.4.0 (2026-08-24)
 
 ### 💥 Breaking Changes
