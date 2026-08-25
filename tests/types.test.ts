@@ -1,7 +1,7 @@
 import injectScript, {
     type InjectScriptErrorCode,
     type InjectScriptResult,
-    type InjectScriptTimeoutDetails,
+    type InjectScriptTargetErrorKind,
     type JsonValue,
     injectScript as namedInjectScript,
     type SerializedInjectScriptError,
@@ -71,23 +71,31 @@ topFrame.run(() => document.body);
 
 declare const result: InjectScriptResult<string>;
 
-if (result.status === "fulfilled") {
-    result.result.toUpperCase();
-}
-
-if (result.status === "rejected") {
+if (result.success) {
+    result.value.toUpperCase();
+    // @ts-expect-error successful outcomes intentionally expose no error
+    result.error;
+} else {
     result.error.message.toUpperCase();
-}
-
-if (result.status === "unknown") {
-    // @ts-expect-error unknown outcomes intentionally expose no result
-    result.result;
+    result.error.kind satisfies `${InjectScriptTargetErrorKind}`;
+    // @ts-expect-error failed outcomes intentionally expose no value
+    result.value;
 }
 
 declare const serializedError: SerializedInjectScriptError;
 declare const errorCode: InjectScriptErrorCode;
-declare const timeoutDetails: InjectScriptTimeoutDetails;
+const literalKind: `${InjectScriptTargetErrorKind}` = "delivery";
+const retryKinds: `${InjectScriptTargetErrorKind}`[] = ["timeout", "target-gone", "unobservable"];
 
 serializedError.message.toUpperCase();
 errorCode.toUpperCase();
-timeoutDetails.partialResults?.map(item => item.status);
+literalKind.toUpperCase();
+retryKinds.map(kind => kind.toUpperCase());
+
+if (!result.success && result.error.kind === "timeout") {
+    result.error.timeoutMs.toFixed();
+    result.error.missingCount?.toFixed();
+} else if (!result.success) {
+    // @ts-expect-error timeout metadata is available only for timeout failures
+    result.error.timeoutMs;
+}

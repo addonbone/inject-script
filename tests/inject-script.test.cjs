@@ -8,6 +8,7 @@ const {
     injectScript: namedInjectScript,
     InjectScriptBaseError,
     InjectScriptDeliveryError,
+    InjectScriptTargetErrorKind,
     InjectScriptTimeoutError,
     InvalidInjectScriptArgumentsError,
     InvalidInjectScriptFilesError,
@@ -169,7 +170,7 @@ describe("MV3 adapter", () => {
         delete global.browser;
     });
 
-    test("translates targets and returns sorted observed outcomes", async () => {
+    test("runs explicit frame targets independently and preserves input order", async () => {
         const {runtime} = createRuntime(3);
         const calls = [];
 
@@ -178,13 +179,19 @@ describe("MV3 adapter", () => {
             scripting: {
                 executeScript: (details, callback) => {
                     calls.push(details);
-                    callback([
-                        {frameId: 8, documentId: "doc-8", error: {name: "Error", message: "failed"}},
-                        {frameId: 9, documentId: "doc-9", error: undefined},
-                        {frameId: 10, documentId: "doc-10", result: "ok", error: undefined},
-                        {frameId: 0, documentId: "doc-0", result: "top"},
-                        {frameId: 3, documentId: "doc-3", result: undefined},
-                    ]);
+                    const frameId = details.target.frameIds[0];
+                    const result =
+                        frameId === 8
+                            ? {frameId, documentId: "doc-8", error: {name: "Error", message: "failed"}}
+                            : frameId === 9
+                              ? {frameId, documentId: "doc-9", error: undefined}
+                              : frameId === 10
+                                ? {frameId, documentId: "doc-10", result: "ok", error: undefined}
+                                : frameId === 0
+                                  ? {frameId, documentId: "doc-0", result: "top"}
+                                  : {frameId, documentId: "doc-3", result: undefined};
+
+                    callback([result]);
                 },
             },
         };
@@ -195,22 +202,206 @@ describe("MV3 adapter", () => {
             world: "MAIN",
         }).run(() => "value");
 
-        expect(calls[0].target).toEqual({tabId: 5, frameIds: [8, 0, 3, 9, 10]});
-        expect(calls[0].injectImmediately).toBe(true);
+        expect(calls.map(call => call.target)).toEqual([
+            {tabId: 5, frameIds: [8]},
+            {tabId: 5, frameIds: [0]},
+            {tabId: 5, frameIds: [3]},
+            {tabId: 5, frameIds: [9]},
+            {tabId: 5, frameIds: [10]},
+        ]);
+        expect(calls.every(call => call.injectImmediately === true)).toBe(true);
         expect(results).toEqual([
-            {target: {tabId: 5, frameId: 0, documentId: "doc-0"}, status: "fulfilled", result: "top"},
-            {target: {tabId: 5, frameId: 3, documentId: "doc-3"}, status: "unknown"},
             {
                 target: {tabId: 5, frameId: 8, documentId: "doc-8"},
-                status: "rejected",
-                error: {name: "Error", message: "failed"},
+                success: false,
+                error: {kind: InjectScriptTargetErrorKind.Execution, name: "Error", message: "failed"},
+            },
+            {target: {tabId: 5, frameId: 0, documentId: "doc-0"}, success: true, value: "top"},
+            {
+                target: {tabId: 5, frameId: 3, documentId: "doc-3"},
+                success: false,
+                error: expect.objectContaining({
+                    kind: InjectScriptTargetErrorKind.Unobservable,
+                    name: "Error",
+                    message: "The browser did not expose an observable injected function result.",
+                }),
             },
             {
                 target: {tabId: 5, frameId: 9, documentId: "doc-9"},
-                status: "rejected",
-                error: {name: "Error", message: "undefined"},
+                success: false,
+                error: {kind: InjectScriptTargetErrorKind.Execution, name: "Error", message: "undefined"},
             },
-            {target: {tabId: 5, frameId: 10, documentId: "doc-10"}, status: "fulfilled", result: "ok"},
+            {target: {tabId: 5, frameId: 10, documentId: "doc-10"}, success: true, value: "ok"},
+        ]);
+    });
+
+    test("starts every explicit frame call before awaiting and isolates a removed frame", async () => {
+        const {runtime} = createRuntime(3);
+        const calls = [];
+        const callbacks = new Map();
+
+        global.chrome = {
+            runtime,
+            scripting: {
+                executeScript: (details, callback) => {
+                    const frameId = details.target.frameIds[0];
+                    calls.push(frameId);
+                    callbacks.set(frameId, callback);
+                },
+            },
+        };
+
+        const pending = injectScript({target: {tabId: 5, frameIds: [7, 2, 9]}}).run(() => "value");
+
+        expect(calls).toEqual([7, 2, 9]);
+
+        callbacks.get(9)([{frameId: 9, result: "nine"}]);
+        global.chrome.runtime.lastError = {message: "No frame with id 2 in tab with id 5"};
+        callbacks.get(2)();
+        global.chrome.runtime.lastError = undefined;
+        callbacks.get(7)([{frameId: 7, result: "seven"}]);
+
+        await expect(pending).resolves.toEqual([
+            {target: {tabId: 5, frameId: 7}, success: true, value: "seven"},
+            {
+                target: {tabId: 5, frameId: 2},
+                success: false,
+                error: expect.objectContaining({
+                    kind: InjectScriptTargetErrorKind.TargetGone,
+                    message: "No frame with id 2 in tab with id 5",
+                }),
+            },
+            {target: {tabId: 5, frameId: 9}, success: true, value: "nine"},
+        ]);
+    });
+
+    test("returns one failure for every unavailable explicit frame", async () => {
+        const {runtime} = createRuntime(3);
+
+        global.chrome = {
+            runtime,
+            scripting: {
+                executeScript: (details, callback) => {
+                    const frameId = details.target.frameIds[0];
+                    global.chrome.runtime.lastError = {message: `No frame with id ${frameId} in tab with id 5`};
+                    callback();
+                    global.chrome.runtime.lastError = undefined;
+                },
+            },
+        };
+
+        const results = await injectScript({target: {tabId: 5, frameIds: [4, 6]}}).run(() => "value");
+
+        expect(results).toHaveLength(2);
+        expect(results.map(result => result.target)).toEqual([
+            {tabId: 5, frameId: 4},
+            {tabId: 5, frameId: 6},
+        ]);
+        expect(
+            results.every(result => !result.success && result.error.kind === InjectScriptTargetErrorKind.TargetGone)
+        ).toBe(true);
+    });
+
+    test("runs document targets independently without inventing a frame ID for delivery failures", async () => {
+        const {runtime} = createRuntime(3);
+        const calls = [];
+
+        global.chrome = {
+            runtime,
+            scripting: {
+                executeScript: (details, callback) => {
+                    const documentId = details.target.documentIds[0];
+                    calls.push(documentId);
+
+                    if (documentId === "doc-b") {
+                        global.chrome.runtime.lastError = {message: "No document with id doc-b"};
+                        callback();
+                        global.chrome.runtime.lastError = undefined;
+                        return;
+                    }
+
+                    callback([{frameId: 7, documentId, result: "document-a"}]);
+                },
+            },
+        };
+
+        await expect(
+            injectScript({target: {tabId: 5, documentIds: ["doc-a", "doc-b"]}}).run(() => "value")
+        ).resolves.toEqual([
+            {target: {tabId: 5, documentId: "doc-a", frameId: 7}, success: true, value: "document-a"},
+            {
+                target: {tabId: 5, documentId: "doc-b"},
+                success: false,
+                error: expect.objectContaining({kind: InjectScriptTargetErrorKind.TargetGone}),
+            },
+        ]);
+        expect(calls).toEqual(["doc-a", "doc-b"]);
+    });
+
+    test("returns per-frame allFrames results and an operation failure when native delivery fails", async () => {
+        const {runtime} = createRuntime(3);
+        let failDelivery = false;
+
+        global.chrome = {
+            runtime,
+            scripting: {
+                executeScript: (_details, callback) => {
+                    if (failDelivery) {
+                        global.chrome.runtime.lastError = {message: "Missing host permission"};
+                        callback();
+                        global.chrome.runtime.lastError = undefined;
+                        return;
+                    }
+
+                    callback([
+                        {frameId: 4, result: "child"},
+                        {frameId: 0, result: "top"},
+                    ]);
+                },
+            },
+        };
+
+        const injector = injectScript({target: {tabId: 5, allFrames: true}});
+
+        await expect(injector.run(() => "value")).resolves.toEqual([
+            {target: {tabId: 5, frameId: 0}, success: true, value: "top"},
+            {target: {tabId: 5, frameId: 4}, success: true, value: "child"},
+        ]);
+
+        failDelivery = true;
+
+        await expect(injector.run(() => "value")).resolves.toEqual([
+            {
+                target: {tabId: 5, allFrames: true},
+                success: false,
+                error: expect.objectContaining({kind: InjectScriptTargetErrorKind.Delivery}),
+            },
+        ]);
+    });
+
+    test("times out only the unresponsive explicit MV3 target", async () => {
+        const {runtime} = createRuntime(3);
+
+        global.chrome = {
+            runtime,
+            scripting: {
+                executeScript: (details, callback) => {
+                    const frameId = details.target.frameIds[0];
+
+                    if (frameId === 1) callback([{frameId, result: "one"}]);
+                },
+            },
+        };
+
+        await expect(
+            injectScript({target: {tabId: 5, frameIds: [1, 2]}, timeoutMs: 5}).run(() => "value")
+        ).resolves.toEqual([
+            {target: {tabId: 5, frameId: 1}, success: true, value: "one"},
+            {
+                target: {tabId: 5, frameId: 2},
+                success: false,
+                error: expect.objectContaining({kind: InjectScriptTargetErrorKind.Timeout, timeoutMs: 5}),
+            },
         ]);
     });
 
@@ -258,45 +449,64 @@ describe("MV3 adapter", () => {
         const byFrame = new Map(results.map(result => [result.target.frameId, result]));
 
         expect(results.slice(0, 4)).toEqual([
-            {target: {tabId: 5, frameId: 0}, status: "fulfilled", result: null},
-            {target: {tabId: 5, frameId: 1}, status: "fulfilled", result: true},
-            {target: {tabId: 5, frameId: 2}, status: "fulfilled", result: 42},
-            {target: {tabId: 5, frameId: 3}, status: "fulfilled", result: {nested: ["ok"]}},
+            {target: {tabId: 5, frameId: 0}, success: true, value: null},
+            {target: {tabId: 5, frameId: 1}, success: true, value: true},
+            {target: {tabId: 5, frameId: 2}, success: true, value: 42},
+            {target: {tabId: 5, frameId: 3}, success: true, value: {nested: ["ok"]}},
         ]);
         expect(byFrame.get(4)).toMatchObject({
-            status: "rejected",
-            error: {name: "TypeError", message: expect.stringContaining("result is a Date instance")},
+            success: false,
+            error: {
+                kind: InjectScriptTargetErrorKind.Execution,
+                name: "TypeError",
+                message: expect.stringContaining("result is a Date instance"),
+            },
         });
         expect(byFrame.get(5)).toMatchObject({
-            status: "rejected",
-            error: {name: "TypeError", message: expect.stringContaining("result is a Map instance")},
+            success: false,
+            error: {
+                kind: InjectScriptTargetErrorKind.Execution,
+                message: expect.stringContaining("result is a Map instance"),
+            },
         });
         expect(byFrame.get(6)).toMatchObject({
-            status: "rejected",
-            error: {name: "TypeError", message: expect.stringContaining("result is NaN")},
+            success: false,
+            error: {kind: InjectScriptTargetErrorKind.Execution, message: expect.stringContaining("result is NaN")},
         });
         expect(byFrame.get(7)).toMatchObject({
-            status: "rejected",
-            error: {name: "TypeError", message: expect.stringContaining("result.self contains a circular reference")},
+            success: false,
+            error: {
+                kind: InjectScriptTargetErrorKind.Execution,
+                message: expect.stringContaining("result.self contains a circular reference"),
+            },
         });
         expect(byFrame.get(8)).toMatchObject({
-            status: "rejected",
-            error: {name: "TypeError", message: expect.stringContaining("result[0] is missing")},
+            success: false,
+            error: {
+                kind: InjectScriptTargetErrorKind.Execution,
+                message: expect.stringContaining("result[0] is missing"),
+            },
         });
         expect(byFrame.get(9)).toMatchObject({
-            status: "rejected",
-            error: {name: "TypeError", message: expect.stringContaining("enumerable symbol-keyed property")},
+            success: false,
+            error: {
+                kind: InjectScriptTargetErrorKind.Execution,
+                message: expect.stringContaining("enumerable symbol-keyed property"),
+            },
         });
         expect(byFrame.get(10)).toMatchObject({
-            status: "rejected",
+            success: false,
             error: {
-                name: "TypeError",
+                kind: InjectScriptTargetErrorKind.Execution,
                 message: expect.stringContaining("result.metadata is an additional array property"),
             },
         });
         expect(byFrame.get(11)).toMatchObject({
-            status: "rejected",
-            error: {name: "TypeError", message: expect.stringContaining("result is a CustomArray instance")},
+            success: false,
+            error: {
+                kind: InjectScriptTargetErrorKind.Execution,
+                message: expect.stringContaining("result is a CustomArray instance"),
+            },
         });
     });
 
@@ -317,8 +527,8 @@ describe("MV3 adapter", () => {
         await expect(injectScript({target: {tabId: 12}}).run(() => "value")).resolves.toEqual([
             {
                 target: {tabId: 12, frameId: 0},
-                status: "fulfilled",
-                result: {namespace: "browser"},
+                success: true,
+                value: {namespace: "browser"},
             },
         ]);
         expect(calls).toHaveLength(1);
@@ -345,20 +555,25 @@ describe("MV3 adapter", () => {
     });
 
     test.each([
-        [{tabId: 7}, {tabId: 7}],
-        [
-            {tabId: 7, allFrames: true},
-            {tabId: 7, allFrames: true},
-        ],
+        [{tabId: 7}, [{tabId: 7}], {tabId: 7}],
+        [{tabId: 7, allFrames: true}, [{tabId: 7, allFrames: true}], {tabId: 7, allFrames: true}],
         [
             {tabId: 7, frameIds: [0, 2]},
+            [
+                {tabId: 7, frameIds: [0]},
+                {tabId: 7, frameIds: [2]},
+            ],
             {tabId: 7, frameIds: [0, 2]},
         ],
         [
             {tabId: 7, documentIds: ["doc-a", "doc-b"]},
+            [
+                {tabId: 7, documentIds: ["doc-a"]},
+                {tabId: 7, documentIds: ["doc-b"]},
+            ],
             {tabId: 7, documentIds: ["doc-a", "doc-b"]},
         ],
-    ])("uses the same target translation for run and file %#", async (target, nativeTarget) => {
+    ])("isolates explicit run targets while keeping file targets native %#", async (target, runTargets, fileTarget) => {
         const {runtime} = createRuntime(3);
         const calls = [];
 
@@ -377,7 +592,7 @@ describe("MV3 adapter", () => {
         await injector.run(() => null);
         await injector.file("/content.js");
 
-        expect(calls).toEqual([nativeTarget, nativeTarget]);
+        expect(calls).toEqual([...runTargets, fileTarget]);
     });
 
     test("updates execution options without changing the target", async () => {
@@ -424,7 +639,7 @@ describe("MV3 adapter", () => {
         };
 
         await expect(injectScript({target: {tabId: 7}}).run(func)).resolves.toEqual([
-            {target: {tabId: 7, frameId: 0}, status: "fulfilled", result: expected},
+            {target: {tabId: 7, frameId: 0}, success: true, value: expected},
         ]);
     });
 
@@ -509,7 +724,7 @@ describe("MV3 adapter", () => {
         );
     });
 
-    test("times out run() with structured timeout details", async () => {
+    test("returns a structured target timeout from run()", async () => {
         const {runtime} = createRuntime(3);
 
         global.chrome = {
@@ -519,12 +734,17 @@ describe("MV3 adapter", () => {
             },
         };
 
-        await expect(injectScript({target: {tabId: 2}, timeoutMs: 5}).run(() => "late")).rejects.toMatchObject({
-            code: "ERR_INJECT_SCRIPT_TIMEOUT",
-            timeoutMs: 5,
-            partialResults: [],
-            target: {tabId: 2},
-        });
+        await expect(injectScript({target: {tabId: 2}, timeoutMs: 5}).run(() => "late")).resolves.toEqual([
+            {
+                target: {tabId: 2, frameId: 0},
+                success: false,
+                error: expect.objectContaining({
+                    kind: InjectScriptTargetErrorKind.Timeout,
+                    name: "InjectScriptTimeoutError",
+                    timeoutMs: 5,
+                }),
+            },
+        ]);
     });
 });
 
@@ -581,10 +801,14 @@ describe("MV2 adapter", () => {
         expect(results).toEqual([
             {
                 target: {tabId: 3, frameId: 0},
-                status: "rejected",
-                error: {name: "Error", message: "top failed"},
+                success: false,
+                error: {
+                    kind: InjectScriptTargetErrorKind.Execution,
+                    name: "Error",
+                    message: "top failed",
+                },
             },
-            {target: {tabId: 3, frameId: 4}, status: "fulfilled", result: "child"},
+            {target: {tabId: 3, frameId: 4}, success: true, value: "child"},
         ]);
         expect(listeners.size).toBe(0);
     });
@@ -617,7 +841,90 @@ describe("MV2 adapter", () => {
         const results = await injectScript({target: {tabId: 6, frameIds: [2, 0]}}).run(() => 1);
 
         expect(frameCalls).toEqual([2, 0]);
-        expect(results.map(result => result.target.frameId)).toEqual([0, 2]);
+        expect(results.map(result => result.target.frameId)).toEqual([2, 0]);
+    });
+
+    test("uses one temporary listener for an explicit frame batch", async () => {
+        jest.useFakeTimers();
+
+        try {
+            const {runtime, listeners} = createRuntime(2);
+            const frameIds = Array.from({length: 20}, (_, frameId) => frameId);
+            const frameCalls = [];
+
+            global.chrome = {
+                runtime,
+                tabs: {
+                    executeScript: (_tabId, details, callback) => {
+                        frameCalls.push(details.frameId);
+                        callback([undefined]);
+                    },
+                },
+            };
+
+            const pending = injectScript({target: {tabId: 6, frameIds}, timeoutMs: 10}).run(() => "value");
+
+            expect(frameCalls).toEqual(frameIds);
+            expect(listeners.size).toBe(1);
+            expect(jest.getTimerCount()).toBe(20);
+
+            jest.advanceTimersByTime(10);
+
+            const results = await pending;
+
+            expect(results).toHaveLength(20);
+            expect(
+                results.every(result => !result.success && result.error.kind === InjectScriptTargetErrorKind.Timeout)
+            ).toBe(true);
+            expect(listeners.size).toBe(0);
+            expect(jest.getTimerCount()).toBe(0);
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
+    test("dispatches explicit responses by request and isolates parallel batches", async () => {
+        const {runtime, listeners} = createRuntime(2);
+        const calls = [];
+
+        global.chrome = {
+            runtime,
+            tabs: {
+                executeScript: (tabId, details, callback) => {
+                    calls.push({tabId, frameId: details.frameId, type: getMessageType(details.code)});
+                    callback([undefined]);
+                },
+            },
+        };
+
+        const first = injectScript({target: {tabId: 6, frameIds: [2, 0]}}).run(() => "first");
+        const second = injectScript({target: {tabId: 7, frameIds: [4, 1]}}).run(() => "second");
+
+        expect(listeners.size).toBe(2);
+
+        const dispatch = (type, tabId, frameId, result) => {
+            for (const listener of [...listeners]) {
+                listener({type, data: {status: "fulfilled", result}}, {tab: {id: tabId}, frameId});
+            }
+        };
+
+        dispatch("unrelated-message", 6, 2, "ignored");
+        dispatch(calls.find(call => call.tabId === 6 && call.frameId === 2).type, 6, 99, "wrong frame");
+
+        dispatch(calls.find(call => call.tabId === 7 && call.frameId === 1).type, 7, 1, "second-1");
+        dispatch(calls.find(call => call.tabId === 6 && call.frameId === 0).type, 6, 0, "first-0");
+        dispatch(calls.find(call => call.tabId === 7 && call.frameId === 4).type, 7, 4, "second-4");
+        dispatch(calls.find(call => call.tabId === 6 && call.frameId === 2).type, 6, 2, "first-2");
+
+        await expect(first).resolves.toEqual([
+            {target: {tabId: 6, frameId: 2}, success: true, value: "first-2"},
+            {target: {tabId: 6, frameId: 0}, success: true, value: "first-0"},
+        ]);
+        await expect(second).resolves.toEqual([
+            {target: {tabId: 7, frameId: 4}, success: true, value: "second-4"},
+            {target: {tabId: 7, frameId: 1}, success: true, value: "second-1"},
+        ]);
+        expect(listeners.size).toBe(0);
     });
 
     test("collects fulfilled and rejected outcomes from explicit frames", async () => {
@@ -646,12 +953,61 @@ describe("MV2 adapter", () => {
         };
 
         await expect(injectScript({target: {tabId: 6, frameIds: [2, 0]}}).run(() => "value")).resolves.toEqual([
-            {target: {tabId: 6, frameId: 0}, status: "fulfilled", result: "top"},
             {
                 target: {tabId: 6, frameId: 2},
-                status: "rejected",
-                error: {name: "Error", message: "failed"},
+                success: false,
+                error: {
+                    kind: InjectScriptTargetErrorKind.Execution,
+                    name: "Error",
+                    message: "failed",
+                },
             },
+            {target: {tabId: 6, frameId: 0}, success: true, value: "top"},
+        ]);
+    });
+
+    test("keeps successful MV2 frames when another native delivery fails", async () => {
+        const {runtime, listeners} = createRuntime(2);
+        const frameCalls = [];
+
+        global.chrome = {
+            runtime,
+            tabs: {
+                executeScript: (tabId, details, callback) => {
+                    frameCalls.push(details.frameId);
+
+                    if (details.frameId === 2) {
+                        global.chrome.runtime.lastError = {message: "No frame with id 2 in tab with id 6"};
+                        callback();
+                        global.chrome.runtime.lastError = undefined;
+                        return;
+                    }
+
+                    const type = getMessageType(details.code);
+
+                    queueMicrotask(() => {
+                        for (const listener of listeners) {
+                            listener(
+                                {type, data: {status: "fulfilled", result: "top"}},
+                                {tab: {id: tabId}, frameId: details.frameId}
+                            );
+                        }
+                    });
+                    callback([undefined]);
+                },
+            },
+        };
+
+        const pending = injectScript({target: {tabId: 6, frameIds: [2, 0]}}).run(() => "value");
+
+        expect(frameCalls).toEqual([2, 0]);
+        await expect(pending).resolves.toEqual([
+            {
+                target: {tabId: 6, frameId: 2},
+                success: false,
+                error: expect.objectContaining({kind: InjectScriptTargetErrorKind.TargetGone}),
+            },
+            {target: {tabId: 6, frameId: 0}, success: true, value: "top"},
         ]);
     });
 
@@ -660,7 +1016,7 @@ describe("MV2 adapter", () => {
             "chrome",
             async value => ({value}),
             ["async"],
-            {target: {tabId: 8, frameId: 0}, status: "fulfilled", result: {value: "async"}},
+            {target: {tabId: 8, frameId: 0}, success: true, value: {value: "async"}},
         ],
         [
             "browser",
@@ -670,7 +1026,7 @@ describe("MV2 adapter", () => {
             [],
             {
                 target: {tabId: 8, frameId: 0},
-                status: "rejected",
+                success: false,
                 error: expect.objectContaining({name: "Error", message: "frame failed"}),
             },
         ],
@@ -680,7 +1036,7 @@ describe("MV2 adapter", () => {
             [],
             {
                 target: {tabId: 8, frameId: 0},
-                status: "rejected",
+                success: false,
                 error: expect.objectContaining({
                     name: "TypeError",
                     message:
@@ -694,7 +1050,7 @@ describe("MV2 adapter", () => {
             [],
             {
                 target: {tabId: 8, frameId: 0},
-                status: "rejected",
+                success: false,
                 error: expect.objectContaining({
                     name: "TypeError",
                     message:
@@ -708,7 +1064,7 @@ describe("MV2 adapter", () => {
             [],
             {
                 target: {tabId: 8, frameId: 0},
-                status: "rejected",
+                success: false,
                 error: expect.objectContaining({
                     name: "TypeError",
                     message:
@@ -763,8 +1119,8 @@ describe("MV2 adapter", () => {
         await expect(injectScript({target: {tabId: 12}}).run(() => "value")).resolves.toEqual([
             {
                 target: {tabId: 12, frameId: 0},
-                status: "fulfilled",
-                result: {namespace: "browser"},
+                success: true,
+                value: {namespace: "browser"},
             },
         ]);
     });
@@ -891,7 +1247,7 @@ describe("MV2 adapter", () => {
         expect(() => injectScript({target: {tabId: 1}, world: "MAIN"})).toThrow(UnsupportedInjectScriptOptionError);
     });
 
-    test("rejects non-JSON arguments and empty files, but marks a known missing response as unknown", async () => {
+    test("rejects invalid input before injection and returns a timeout for a missing response", async () => {
         const {runtime} = createRuntime(2);
 
         global.chrome = {
@@ -914,7 +1270,15 @@ describe("MV2 adapter", () => {
         await expect(injector.run(value => value, [cyclic])).rejects.toThrow(InvalidInjectScriptArgumentsError);
         await expect(injector.file([])).rejects.toThrow(InvalidInjectScriptFilesError);
         await expect(injector.run(() => "never delivered")).resolves.toEqual([
-            {target: {tabId: 1, frameId: 0}, status: "unknown"},
+            {
+                target: {tabId: 1, frameId: 0},
+                success: false,
+                error: expect.objectContaining({
+                    kind: InjectScriptTargetErrorKind.Timeout,
+                    name: "InjectScriptTimeoutError",
+                    timeoutMs: 5,
+                }),
+            },
         ]);
     });
 
@@ -986,7 +1350,7 @@ describe("MV2 adapter", () => {
         );
     });
 
-    test("preserves known frame results and marks only missing explicit frames as unknown", async () => {
+    test("preserves known frame results and times out only the missing explicit frame", async () => {
         const {runtime, listeners} = createRuntime(2);
 
         global.chrome = {
@@ -1014,8 +1378,16 @@ describe("MV2 adapter", () => {
         await expect(
             injectScript({target: {tabId: 1, frameIds: [2, 0]}, timeoutMs: 5}).run(() => "value")
         ).resolves.toEqual([
-            {target: {tabId: 1, frameId: 0}, status: "fulfilled", result: "top"},
-            {target: {tabId: 1, frameId: 2}, status: "unknown"},
+            {
+                target: {tabId: 1, frameId: 2},
+                success: false,
+                error: expect.objectContaining({
+                    kind: InjectScriptTargetErrorKind.Timeout,
+                    name: "InjectScriptTimeoutError",
+                    timeoutMs: 5,
+                }),
+            },
+            {target: {tabId: 1, frameId: 0}, success: true, value: "top"},
         ]);
     });
 
@@ -1044,12 +1416,19 @@ describe("MV2 adapter", () => {
 
         await expect(
             injectScript({target: {tabId: 1, allFrames: true}, timeoutMs: 5}).run(() => "value")
-        ).rejects.toMatchObject({
-            code: "ERR_INJECT_SCRIPT_TIMEOUT",
-            timeoutMs: 5,
-            missingCount: 1,
-            partialResults: [{target: {tabId: 1, frameId: 0}, status: "fulfilled", result: "top"}],
-        });
+        ).resolves.toEqual([
+            {target: {tabId: 1, frameId: 0}, success: true, value: "top"},
+            {
+                target: {tabId: 1, allFrames: true},
+                success: false,
+                error: expect.objectContaining({
+                    kind: InjectScriptTargetErrorKind.Timeout,
+                    name: "InjectScriptTimeoutError",
+                    timeoutMs: 5,
+                    missingCount: 1,
+                }),
+            },
+        ]);
     });
 
     test("cleans up listeners and timers after delivery errors and timeouts", async () => {
@@ -1069,18 +1448,30 @@ describe("MV2 adapter", () => {
                 },
             };
 
-            await expect(injectScript({target: {tabId: 1}}).run(() => null)).rejects.toThrow(InjectScriptDeliveryError);
+            await expect(injectScript({target: {tabId: 1}}).run(() => null)).resolves.toEqual([
+                {
+                    target: {tabId: 1, frameId: 0},
+                    success: false,
+                    error: expect.objectContaining({kind: InjectScriptTargetErrorKind.Delivery}),
+                },
+            ]);
             expect(listeners.size).toBe(0);
             expect(jest.getTimerCount()).toBe(0);
 
             global.chrome.tabs.executeScript = () => {};
 
             const pending = injectScript({target: {tabId: 1}, timeoutMs: 10}).run(() => null);
-            const rejection = expect(pending).rejects.toThrow(InjectScriptTimeoutError);
+            const result = expect(pending).resolves.toEqual([
+                {
+                    target: {tabId: 1, frameId: 0},
+                    success: false,
+                    error: expect.objectContaining({kind: InjectScriptTargetErrorKind.Timeout}),
+                },
+            ]);
 
             expect(listeners.size).toBe(1);
             jest.advanceTimersByTime(10);
-            await rejection;
+            await result;
 
             expect(listeners.size).toBe(0);
             expect(jest.getTimerCount()).toBe(0);

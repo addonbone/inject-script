@@ -67,11 +67,25 @@ export interface InjectScriptOptions extends InjectScriptExecutionOptions {
     target: InjectScriptTarget;
 }
 
-export interface InjectScriptResultTarget {
-    tabId: number;
-    frameId: number;
-    documentId?: string;
-}
+export type InjectScriptResultTarget =
+    | {
+          tabId: number;
+          frameId: number;
+          documentId?: string;
+          allFrames?: never;
+      }
+    | {
+          tabId: number;
+          documentId: string;
+          frameId?: number;
+          allFrames?: never;
+      }
+    | {
+          tabId: number;
+          allFrames: true;
+          frameId?: never;
+          documentId?: never;
+      };
 
 export interface SerializedInjectScriptError {
     name: string;
@@ -79,21 +93,42 @@ export interface SerializedInjectScriptError {
     stack?: string;
 }
 
-export type InjectScriptResult<T> =
-    | {
-          target: InjectScriptResultTarget;
-          status: "fulfilled";
-          result: T;
-      }
-    | {
-          target: InjectScriptResultTarget;
-          status: "rejected";
-          error: SerializedInjectScriptError;
-      }
-    | {
-          target: InjectScriptResultTarget;
-          status: "unknown";
-      };
+export enum InjectScriptTargetErrorKind {
+    Execution = "execution",
+    Delivery = "delivery",
+    Timeout = "timeout",
+    TargetGone = "target-gone",
+    Unobservable = "unobservable",
+}
+
+type InjectScriptTargetErrorKindValue = `${InjectScriptTargetErrorKind}`;
+type InjectScriptTargetTimeoutKind = `${InjectScriptTargetErrorKind.Timeout}`;
+
+export interface InjectScriptTargetTimeoutError extends SerializedInjectScriptError {
+    kind: InjectScriptTargetTimeoutKind;
+    timeoutMs: number;
+    missingCount?: number;
+}
+
+export type InjectScriptTargetError =
+    | InjectScriptTargetTimeoutError
+    | (SerializedInjectScriptError & {
+          kind: Exclude<InjectScriptTargetErrorKindValue, InjectScriptTargetTimeoutKind>;
+      });
+
+export interface InjectScriptTargetSuccess<T> {
+    success: true;
+    target: InjectScriptResultTarget;
+    value: T;
+}
+
+export interface InjectScriptTargetFailure {
+    success: false;
+    target: InjectScriptResultTarget;
+    error: InjectScriptTargetError;
+}
+
+export type InjectScriptResult<T> = InjectScriptTargetSuccess<T> | InjectScriptTargetFailure;
 
 export type InjectScriptFunctionResult<T = JsonValue> = T | PromiseLike<T>;
 
