@@ -60,7 +60,8 @@ Keep changes focused and preserve the package's public design:
 - Every operation has one explicit `target`.
 - Target selectors remain mutually exclusive.
 - Unsupported targets and options fail explicitly; they are never removed silently.
-- `run()` returns package-owned per-frame outcomes instead of raw browser results.
+- `run()` uses best-effort target isolation and returns package-owned success/failure outcomes instead of raw browser results.
+- Explicit target calls start synchronously before the first result is awaited so user activation is preserved.
 - Callback arguments and results remain strictly JSON-compatible.
 - MV2 injected code must stay self-contained because imports and caller closures do not cross the injection boundary.
 - Runtime code must not introduce `eval` or `new Function`.
@@ -81,7 +82,8 @@ For adapter changes, cover the affected combinations where relevant:
 - Manifest V2 and Manifest V3;
 - callback-based `global.chrome` and Promise-based `global.browser`;
 - top frame, `allFrames`, explicit `frameIds`, and `documentIds`;
-- `fulfilled`, `rejected`, and `unknown` outcomes;
+- success and failure outcomes, including execution, delivery, timeout, and target-gone errors;
+- input ordering and synchronous initiation of explicit target batches;
 - valid JSON data and runtime-only invalid values;
 - preparation errors, native delivery failures, and timeouts.
 
