@@ -14,7 +14,8 @@ export {
     UnsupportedInjectScriptOptionError,
     UnsupportedInjectScriptTargetError,
 } from "./errors";
-export type {InjectScriptErrorCode, InjectScriptTimeoutDetails} from "./errors";
+export {InjectScriptTargetErrorKind} from "./types";
+export type {InjectScriptErrorCode} from "./errors";
 export type {
     InjectScriptAllFramesTarget,
     InjectScriptContract,
@@ -26,6 +27,10 @@ export type {
     InjectScriptResult,
     InjectScriptResultTarget,
     InjectScriptTarget,
+    InjectScriptTargetError,
+    InjectScriptTargetFailure,
+    InjectScriptTargetSuccess,
+    InjectScriptTargetTimeoutError,
     InjectScriptTopFrameTarget,
     JsonCompatible,
     JsonPrimitive,

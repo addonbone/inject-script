@@ -1,13 +1,23 @@
 import {executeScriptTab, onMessage} from "@addon-core/browser";
 import AbstractInjectScript from "./AbstractInjectScript";
 import {
-    InjectScriptDeliveryError,
     InjectScriptTimeoutError,
     UnsupportedInjectScriptOptionError,
     UnsupportedInjectScriptTargetError,
 } from "./errors";
 import {createRequestId} from "./requestId";
-import {createResultTarget, normalizeInjectionError, sortInjectionResults} from "./results";
+import {
+    classifyTargetDeliveryError,
+    createAllFramesResultTarget,
+    createFrameResultTarget,
+    createTargetFailure,
+    createTargetSuccess,
+    createTargetTimeoutFailure,
+    normalizeInjectionError,
+    sortInjectionResults,
+    withTargetErrorKind,
+} from "./results";
+import {InjectScriptTargetErrorKind} from "./types";
 import {findJsonCompatibilityIssue} from "./validation";
 import type {
     InjectScriptExecutionOptions,
@@ -22,6 +32,14 @@ type MessageSender = chrome.runtime.MessageSender;
 type InjectDetails = chrome.extensionTypes.InjectDetails;
 
 type InjectedOutcome<T> = {status: "fulfilled"; result: T} | {status: "rejected"; error: SerializedInjectScriptError};
+
+interface PendingExplicitFrame<T> {
+    frameId: number;
+    messageType: string;
+    promise: Promise<InjectScriptResult<T>>;
+    resolve: (result: InjectScriptResult<T>) => void;
+    timeoutId?: ReturnType<typeof setTimeout>;
+}
 
 export default class extends AbstractInjectScript {
     public constructor(options: InjectScriptOptions) {
@@ -38,120 +56,16 @@ export default class extends AbstractInjectScript {
         const target = this.snapshotTarget();
         const execution = this.snapshotExecution();
         const timeoutMs = this.timeoutMs;
+        const createCode = this.createCodeBuilder(func, args);
 
-        return new Promise<InjectScriptResult<Awaited<R>>[]>((resolve, reject) => {
-            const messageType = createRequestId();
-            const results = new Map<number, InjectScriptResult<Awaited<R>>>();
-            const knownFrameIds = this.getKnownFrameIds(target);
+        if ("allFrames" in target && target.allFrames === true) {
+            return this.runAllFrames(target, execution, timeoutMs, createCode);
+        }
 
-            let expectedCount: number | undefined;
-            let deliveryCompleted = false;
-            let settled = false;
+        const frameIds = "frameIds" in target && target.frameIds !== undefined ? target.frameIds : ([0] as const);
+        const baseDetails = this.createRunDetails(execution);
 
-            const finish = (callback: () => void): void => {
-                if (settled) return;
-
-                settled = true;
-                unsubscribe();
-                clearTimeout(timeoutId);
-                callback();
-            };
-
-            const maybeResolve = (): void => {
-                if (!deliveryCompleted) return;
-
-                if (knownFrameIds) {
-                    if (knownFrameIds.some(frameId => !results.has(frameId))) return;
-                } else if (expectedCount === undefined || results.size < expectedCount) {
-                    return;
-                }
-
-                finish(() => resolve(sortInjectionResults([...results.values()])));
-            };
-
-            const listener = (message: unknown, sender: MessageSender): void => {
-                if (!this.isInjectedResponse(message, messageType)) return;
-                if (sender.tab?.id !== target.tabId) return;
-
-                const {frameId, documentId} = sender;
-
-                if (frameId === undefined) {
-                    finish(() =>
-                        reject(
-                            new InjectScriptDeliveryError(
-                                target,
-                                new Error("The injected response did not include a frame ID.")
-                            )
-                        )
-                    );
-                    return;
-                }
-
-                if (!this.isExpectedFrame(target, frameId)) return;
-                if (results.has(frameId)) return;
-
-                const resultTarget = createResultTarget(target.tabId, frameId, documentId);
-                const outcome = message.data;
-
-                results.set(
-                    frameId,
-                    outcome.status === "fulfilled"
-                        ? {
-                              target: resultTarget,
-                              status: "fulfilled",
-                              result: outcome.result as Awaited<R>,
-                          }
-                        : {
-                              target: resultTarget,
-                              status: "rejected",
-                              error: normalizeInjectionError(outcome.error),
-                          }
-                );
-
-                maybeResolve();
-            };
-
-            const unsubscribe = onMessage(listener);
-
-            const timeoutId = setTimeout(() => {
-                const partialResults = sortInjectionResults([...results.values()]);
-
-                if (deliveryCompleted && knownFrameIds) {
-                    for (const frameId of knownFrameIds) {
-                        if (results.has(frameId)) continue;
-
-                        results.set(frameId, {
-                            target: createResultTarget(target.tabId, frameId),
-                            status: "unknown",
-                        });
-                    }
-
-                    finish(() => resolve(sortInjectionResults([...results.values()])));
-                    return;
-                }
-
-                const missingCount =
-                    expectedCount === undefined ? undefined : Math.max(0, expectedCount - results.size);
-
-                finish(() => reject(new InjectScriptTimeoutError(target, timeoutMs, {partialResults, missingCount})));
-            }, timeoutMs);
-
-            const details: InjectDetails = {
-                code: this.getCode(messageType, func, args),
-                ...(execution.runAt !== undefined ? {runAt: execution.runAt} : {}),
-                ...(execution.matchAboutBlank !== undefined ? {matchAboutBlank: execution.matchAboutBlank} : {}),
-            };
-
-            void this.executeRun(target, details)
-                .then(count => {
-                    deliveryCompleted = true;
-                    expectedCount = count;
-                    maybeResolve();
-                })
-                .catch(error => {
-                    finish(() => reject(this.deliveryError(target, error)));
-                });
-        });
+        return this.runExplicitFrames<Awaited<R>>(target.tabId, frameIds, baseDetails, timeoutMs, createCode);
     }
 
     public async file(files: string | NonEmptyReadonlyArray<string>): Promise<void> {
@@ -193,24 +107,288 @@ export default class extends AbstractInjectScript {
         }
     }
 
-    private async executeRun(target: InjectScriptTarget, details: InjectDetails): Promise<number> {
-        if ("allFrames" in target && target.allFrames === true) {
-            const nativeResults = await executeScriptTab(target.tabId, {...details, allFrames: true});
+    private runExplicitFrames<T>(
+        tabId: number,
+        frameIds: NonEmptyReadonlyArray<number>,
+        baseDetails: Partial<Pick<InjectDetails, "matchAboutBlank" | "runAt">>,
+        timeoutMs: number,
+        createCode: (messageType: string) => string
+    ): Promise<InjectScriptResult<T>[]> {
+        const pending = new Map<string, PendingExplicitFrame<T>>();
+        const requests = frameIds.map<PendingExplicitFrame<T>>(frameId => {
+            const messageType = createRequestId();
+            let resolveResult!: (result: InjectScriptResult<T>) => void;
+            const promise = new Promise<InjectScriptResult<T>>(resolve => {
+                resolveResult = resolve;
+            });
 
-            return this.getNativeResultCount(nativeResults);
-        }
+            const request: PendingExplicitFrame<T> = {
+                frameId,
+                messageType,
+                promise,
+                resolve: resolveResult,
+            };
 
-        if ("frameIds" in target && target.frameIds !== undefined) {
-            const nativeResults = await Promise.all(
-                target.frameIds.map(frameId => executeScriptTab(target.tabId, {...details, frameId}))
+            pending.set(messageType, request);
+
+            return request;
+        });
+
+        let unsubscribe = (): void => {};
+
+        const finish = (request: PendingExplicitFrame<T>, result: InjectScriptResult<T>): void => {
+            if (pending.get(request.messageType) !== request) return;
+
+            pending.delete(request.messageType);
+
+            if (request.timeoutId !== undefined) {
+                clearTimeout(request.timeoutId);
+            }
+
+            request.resolve(result);
+
+            if (pending.size === 0) {
+                unsubscribe();
+            }
+        };
+
+        const listener = (message: unknown, sender: MessageSender): void => {
+            if (typeof message !== "object" || message === null) return;
+
+            const messageType = (message as {type?: unknown}).type;
+
+            if (typeof messageType !== "string") return;
+
+            const request = pending.get(messageType);
+
+            if (!request || !this.isInjectedResponse(message, messageType)) return;
+            if (sender.tab?.id !== tabId) return;
+
+            const resultTarget = createFrameResultTarget(tabId, request.frameId);
+
+            if (sender.frameId === undefined) {
+                finish(
+                    request,
+                    createTargetFailure(
+                        resultTarget,
+                        InjectScriptTargetErrorKind.Delivery,
+                        new Error("The injected response did not include a frame ID.")
+                    )
+                );
+                return;
+            }
+
+            if (sender.frameId !== request.frameId) return;
+
+            const observedTarget = createFrameResultTarget(tabId, request.frameId, sender.documentId);
+            const outcome = message.data;
+
+            finish(
+                request,
+                outcome.status === "fulfilled"
+                    ? createTargetSuccess(observedTarget, outcome.result as T)
+                    : {
+                          success: false,
+                          target: observedTarget,
+                          error: withTargetErrorKind(
+                              InjectScriptTargetErrorKind.Execution,
+                              normalizeInjectionError(outcome.error)
+                          ),
+                      }
             );
+        };
 
-            return nativeResults.reduce((count, result) => count + this.getNativeResultCount(result), 0);
+        try {
+            unsubscribe = onMessage(listener);
+        } catch (error) {
+            for (const request of requests) {
+                finish(
+                    request,
+                    createTargetFailure(
+                        createFrameResultTarget(tabId, request.frameId),
+                        InjectScriptTargetErrorKind.Delivery,
+                        error
+                    )
+                );
+            }
+
+            return Promise.all(requests.map(request => request.promise));
         }
 
-        const nativeResults = await executeScriptTab(target.tabId, details);
+        // Preserve user activation: every native call is initiated before the first await.
+        for (const request of requests) {
+            const resultTarget = createFrameResultTarget(tabId, request.frameId);
+            const requestTarget: InjectScriptTarget = {tabId, frameIds: [request.frameId]};
 
-        return this.getNativeResultCount(nativeResults);
+            request.timeoutId = setTimeout(() => {
+                finish(
+                    request,
+                    createTargetTimeoutFailure(
+                        resultTarget,
+                        timeoutMs,
+                        new InjectScriptTimeoutError(requestTarget, timeoutMs)
+                    )
+                );
+            }, timeoutMs);
+
+            try {
+                const details: InjectDetails = {
+                    ...baseDetails,
+                    code: createCode(request.messageType),
+                    frameId: request.frameId,
+                };
+
+                void executeScriptTab(tabId, details)
+                    .then(nativeResults => {
+                        if (!pending.has(request.messageType)) return;
+
+                        try {
+                            if (this.getNativeResultCount(nativeResults) === 0) {
+                                finish(
+                                    request,
+                                    createTargetFailure(
+                                        resultTarget,
+                                        InjectScriptTargetErrorKind.Delivery,
+                                        new Error("The browser did not execute the script in the requested frame.")
+                                    )
+                                );
+                            }
+                        } catch (error) {
+                            finish(
+                                request,
+                                createTargetFailure(resultTarget, InjectScriptTargetErrorKind.Delivery, error)
+                            );
+                        }
+                    })
+                    .catch(error => {
+                        finish(request, createTargetFailure(resultTarget, classifyTargetDeliveryError(error), error));
+                    });
+            } catch (error) {
+                finish(request, createTargetFailure(resultTarget, classifyTargetDeliveryError(error), error));
+            }
+        }
+
+        return Promise.all(requests.map(request => request.promise));
+    }
+
+    private runAllFrames<T>(
+        target: InjectScriptTarget,
+        execution: InjectScriptExecutionOptions,
+        timeoutMs: number,
+        createCode: (messageType: string) => string
+    ): Promise<InjectScriptResult<T>[]> {
+        return new Promise<InjectScriptResult<T>[]>(resolve => {
+            const messageType = createRequestId();
+            const results = new Map<number, InjectScriptResult<T>>();
+            const operationTarget = createAllFramesResultTarget(target.tabId);
+
+            let expectedCount: number | undefined;
+            let deliveryCompleted = false;
+            let settled = false;
+
+            const finish = (outcomes: InjectScriptResult<T>[]): void => {
+                if (settled) return;
+
+                settled = true;
+                unsubscribe();
+                clearTimeout(timeoutId);
+                resolve(sortInjectionResults(outcomes));
+            };
+
+            const maybeResolve = (): void => {
+                if (!deliveryCompleted || expectedCount === undefined || results.size < expectedCount) return;
+
+                finish([...results.values()]);
+            };
+
+            const listener = (message: unknown, sender: MessageSender): void => {
+                if (!this.isInjectedResponse(message, messageType)) return;
+                if (sender.tab?.id !== target.tabId) return;
+
+                const {frameId, documentId} = sender;
+
+                if (frameId === undefined) {
+                    finish([
+                        ...results.values(),
+                        createTargetFailure(
+                            operationTarget,
+                            InjectScriptTargetErrorKind.Delivery,
+                            new Error("The injected response did not include a frame ID.")
+                        ),
+                    ]);
+                    return;
+                }
+
+                if (results.has(frameId)) return;
+
+                const resultTarget = createFrameResultTarget(target.tabId, frameId, documentId);
+                const outcome = message.data;
+
+                results.set(
+                    frameId,
+                    outcome.status === "fulfilled"
+                        ? createTargetSuccess(resultTarget, outcome.result as T)
+                        : {
+                              success: false,
+                              target: resultTarget,
+                              error: withTargetErrorKind(
+                                  InjectScriptTargetErrorKind.Execution,
+                                  normalizeInjectionError(outcome.error)
+                              ),
+                          }
+                );
+
+                maybeResolve();
+            };
+
+            const unsubscribe = onMessage(listener);
+            const timeoutId = setTimeout(() => {
+                const partialResults = sortInjectionResults([...results.values()]);
+                const missingCount =
+                    expectedCount === undefined ? undefined : Math.max(0, expectedCount - results.size);
+                const timeoutError = new InjectScriptTimeoutError(target, timeoutMs);
+
+                finish([
+                    ...partialResults,
+                    createTargetTimeoutFailure(operationTarget, timeoutMs, timeoutError, missingCount),
+                ]);
+            }, timeoutMs);
+            const details: InjectDetails = {
+                ...this.createRunDetails(execution),
+                code: createCode(messageType),
+                allFrames: true,
+            };
+
+            void executeScriptTab(target.tabId, details)
+                .then(nativeResults => {
+                    deliveryCompleted = true;
+
+                    try {
+                        expectedCount = this.getNativeResultCount(nativeResults);
+                        maybeResolve();
+                    } catch (error) {
+                        finish([
+                            ...results.values(),
+                            createTargetFailure(operationTarget, InjectScriptTargetErrorKind.Delivery, error),
+                        ]);
+                    }
+                })
+                .catch(error => {
+                    finish([
+                        ...results.values(),
+                        createTargetFailure(operationTarget, InjectScriptTargetErrorKind.Delivery, error),
+                    ]);
+                });
+        });
+    }
+
+    private createRunDetails(
+        execution: InjectScriptExecutionOptions
+    ): Partial<Pick<InjectDetails, "matchAboutBlank" | "runAt">> {
+        return {
+            ...(execution.runAt !== undefined ? {runAt: execution.runAt} : {}),
+            ...(execution.matchAboutBlank !== undefined ? {matchAboutBlank: execution.matchAboutBlank} : {}),
+        };
     }
 
     private async executeFile(target: InjectScriptTarget, details: InjectDetails): Promise<void> {
@@ -252,27 +430,20 @@ export default class extends AbstractInjectScript {
         return outcome.status === "fulfilled" || outcome.status === "rejected";
     }
 
-    private getKnownFrameIds(target: InjectScriptTarget): readonly number[] | undefined {
-        if ("allFrames" in target && target.allFrames === true) return undefined;
-        if ("frameIds" in target && target.frameIds !== undefined) return target.frameIds;
-
-        return [0];
-    }
-
-    private isExpectedFrame(target: InjectScriptTarget, frameId: number): boolean {
-        const knownFrameIds = this.getKnownFrameIds(target);
-
-        return knownFrameIds === undefined || knownFrameIds.includes(frameId);
-    }
-
-    private getCode<A extends readonly unknown[], R>(messageType: string, func: (...args: A) => R, args?: A): string {
+    private createCodeBuilder<A extends readonly unknown[], R>(
+        func: (...args: A) => R,
+        args?: A
+    ): (messageType: string) => string {
         const codeSource = this.generateCode().toString();
         const funcSource = func.toString();
         const validatorSource = findJsonCompatibilityIssue.toString();
-        const serializedType = JSON.stringify(messageType);
         const serializedArgs = JSON.stringify(args ?? []);
 
-        return `(${codeSource})(${serializedType}, ${funcSource}, ${serializedArgs}, ${validatorSource})`;
+        return messageType => {
+            const serializedType = JSON.stringify(messageType);
+
+            return `(${codeSource})(${serializedType}, ${funcSource}, ${serializedArgs}, ${validatorSource})`;
+        };
     }
 
     private generateCode(): (

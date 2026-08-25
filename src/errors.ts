@@ -1,4 +1,4 @@
-import type {InjectScriptResult, InjectScriptTarget} from "./types";
+import type {InjectScriptTarget} from "./types";
 
 export type InjectScriptErrorCode =
     | "ERR_INJECT_SCRIPT_DELIVERY"
@@ -87,18 +87,11 @@ export class InvalidInjectScriptFilesError extends InjectScriptBaseError {
     }
 }
 
-export interface InjectScriptTimeoutDetails {
-    missingCount?: number;
-    partialResults?: readonly InjectScriptResult<unknown>[];
-}
-
 export class InjectScriptTimeoutError extends InjectScriptBaseError {
     public readonly target: InjectScriptTarget;
     public readonly timeoutMs: number;
-    public readonly partialResults: readonly InjectScriptResult<unknown>[];
-    public readonly missingCount?: number;
 
-    public constructor(target: InjectScriptTarget, timeoutMs: number, details: InjectScriptTimeoutDetails = {}) {
+    public constructor(target: InjectScriptTarget, timeoutMs: number) {
         super(
             "InjectScriptTimeoutError",
             "ERR_INJECT_SCRIPT_TIMEOUT",
@@ -106,8 +99,6 @@ export class InjectScriptTimeoutError extends InjectScriptBaseError {
         );
         this.target = target;
         this.timeoutMs = timeoutMs;
-        this.partialResults = [...(details.partialResults ?? [])];
-        this.missingCount = details.missingCount;
     }
 }
 
