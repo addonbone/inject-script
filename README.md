@@ -7,11 +7,12 @@
 
 Run typed functions or inject script files into browser extension tabs with one API for Manifest V2 and Manifest V3.
 
-`@addon-core/inject-script` selects the correct browser adapter, translates explicit frame and document targets, and turns native browser responses into predictable per-frame outcomes. You write the callback and choose the target; the package handles the manifest-specific execution path.
+`@addon-core/inject-script` selects the correct browser adapter, translates explicit frame and document targets, and turns native browser responses into predictable outcomes. You write the callback and choose the target; the package handles the manifest-specific execution path.
 
 - One target model for the top frame, all frames, selected frames, or selected documents
 - Typed synchronous and asynchronous callbacks with explicit arguments
-- Structured `fulfilled`, `rejected`, and `unknown` outcomes
+- Best-effort batches: one unavailable target does not discard successful results
+- Typed `success`/`failure` outcomes with delivery, execution, timeout, target-gone, and unobservable errors
 - Strict JSON-compatible data validation with actionable error paths
 - No `eval`, no `new Function`, and no extra frame-enumeration permissions
 
@@ -32,28 +33,14 @@ Your extension still needs the native permissions required for script injection,
 ```ts
 import injectScript from "@addon-core/inject-script";
 
-const outcomes = await injectScript({
-  target: {
-    tabId: 123,
-    allFrames: true,
-  },
-  timeoutMs: 5_000,
-}).run(
-  (selector: string) => ({
-    href: location.href,
-    text: document.querySelector(selector)?.textContent ?? null,
-  }),
-  ["h1"],
-);
+const [outcome] = await injectScript({
+  target: {tabId: 123},
+}).run(() => document.title);
 
-for (const outcome of outcomes) {
-  if (outcome.status === "fulfilled") {
-    console.log(outcome.target.frameId, outcome.result);
-  } else if (outcome.status === "rejected") {
-    console.error(outcome.target.frameId, outcome.error);
-  } else {
-    console.warn(outcome.target.frameId, "No result or error was exposed");
-  }
+if (outcome.success) {
+  console.log(outcome.value);
+} else {
+  console.error(outcome.error.kind, outcome.error.message);
 }
 ```
 
@@ -103,11 +90,13 @@ const injector = injectScript({target});
 
 ### Observed results, not frame discovery
 
-An `allFrames` call is one native browser operation. It returns outcomes for the frames the browser reports as executed; it is not a frame snapshot or an exhaustive RPC fan-out.
+An `allFrames` call is one native browser operation. It returns outcomes for the frames the browser reports as executed; it is not a frame snapshot or an exhaustive RPC fan-out. If the whole native operation fails, the returned failure uses `target: {tabId, allFrames: true}` without inventing a frame ID.
 
-With explicit `frameIds`, a normal execution returns one outcome per requested frame. MV2 can mark a known frame that did not answer as `unknown`. MV3 returns the native outcomes exposed by the browser and does not fabricate missing frame results.
+Explicit `frameIds` and `documentIds` are different: `run()` starts one native call per requested target. All calls are initiated before the first result is awaited, which preserves user activation for browser APIs that require a user gesture. The returned array always follows the input order, and a delivery error or timeout for one target does not discard the others.
 
-If an application requires exactly one outcome for every previously discovered frame, enumerate those frames in the application layer and call them through explicit `frameIds` targets.
+This isolation has a linear cost: `N` explicit targets create `N` native injection calls. MV2 uses one temporary message listener for the batch and keeps `N` independent timeout timers. The package deliberately starts the native calls without an internal concurrency limit because awaiting a previous chunk could lose user activation. Prefer `allFrames` when one native operation is sufficient; use explicit IDs when independent outcomes are more important.
+
+If an application requires exactly one outcome for every previously discovered frame, enumerate those frames in the application layer and pass that snapshot through explicit `frameIds` targets.
 
 ## Run a function
 
@@ -155,51 +144,82 @@ Type-only annotations are safe because they disappear during compilation. Import
 
 ## Work with outcomes
 
-When the browser request itself succeeds, `run()` resolves to an array of package-owned outcomes:
+`run()` is best-effort by default. For a valid request, target-level execution, delivery, and timeout errors are values in the resolved array rather than reasons to reject the whole promise:
 
 ```ts
 type InjectScriptResult<T> =
   | {
-      target: {tabId: number; frameId: number; documentId?: string};
-      status: "fulfilled";
-      result: T;
+      success: true;
+      target: InjectScriptResultTarget;
+      value: T;
     }
   | {
-      target: {tabId: number; frameId: number; documentId?: string};
-      status: "rejected";
-      error: {name: string; message: string; stack?: string};
-    }
-  | {
-      target: {tabId: number; frameId: number; documentId?: string};
-      status: "unknown";
+      success: false;
+      target: InjectScriptResultTarget;
+      error: InjectScriptTargetError;
     };
+
+type InjectScriptTargetError =
+  | {
+      kind: "execution" | "delivery" | "target-gone" | "unobservable";
+      name: string;
+      message: string;
+      stack?: string;
+    }
+  | {
+      kind: "timeout";
+      name: string;
+      message: string;
+      stack?: string;
+      timeoutMs: number;
+      missingCount?: number;
+    };
+
+type InjectScriptResultTarget =
+  | {tabId: number; frameId: number; documentId?: string}
+  | {tabId: number; documentId: string; frameId?: number}
+  | {tabId: number; allFrames: true};
 ```
 
-- `fulfilled` means the browser exposed a valid callback result.
-- `rejected` means a frame-level callback or result-validation error was available.
-- `unknown` means the browser reported the frame but exposed neither a result nor an error.
+- `success: true` contains the JSON-compatible callback value.
+- `success: false` contains the affected target and a normalized error.
+- A document delivery failure can be identified by `documentId` alone; the package never adds a fake `frameId`.
 
-`target` describes the actual execution context reported by the browser. Results are sorted by `frameId`, with the main frame (`frameId: 0`) first, and preserve `documentId` when available.
+Explicit-target results follow the requested `frameIds` or `documentIds` order. Successful `allFrames` results are sorted by `frameId`, with the main frame (`frameId: 0`) first, and preserve `documentId` when available.
 
-A rejected frame does not discard successful results from other frames.
+A failed target does not discard successful results from other targets:
 
 ```ts
 for (const outcome of outcomes) {
-  switch (outcome.status) {
-    case "fulfilled":
-      useValue(outcome.target, outcome.result);
-      break;
-
-    case "rejected":
-      reportFrameError(outcome.target, outcome.error);
-      break;
-
-    case "unknown":
-      reportMissingOutcome(outcome.target);
-      break;
+  if (outcome.success) {
+    useValue(outcome.target, outcome.value);
+  } else {
+    reportTargetError(outcome.target, outcome.error);
   }
 }
 ```
+
+Error kinds are stable and exported as `InjectScriptTargetErrorKind`:
+
+| Kind | Meaning |
+| --- | --- |
+| `Execution` (`"execution"`) | The callback ran but failed, or its result violated the data contract |
+| `Delivery` (`"delivery"`) | The browser could not deliver or observe the injection |
+| `Timeout` (`"timeout"`) | This target, or an `allFrames` operation, did not finish in time |
+| `TargetGone` (`"target-gone"`) | The browser reported that the requested tab, frame, or document disappeared |
+| `Unobservable` (`"unobservable"`) | The browser exposed neither a usable callback result nor an observable callback error |
+
+`InjectScriptTargetErrorKind` is a string enum. Its template-literal form can be used when an application needs to assign literal strings:
+
+```ts
+const retryKinds: `${InjectScriptTargetErrorKind}`[] = ["timeout", "target-gone"];
+
+if (!outcome.success && outcome.error.kind === InjectScriptTargetErrorKind.Timeout) {
+  // ...
+}
+```
+
+A timeout failure always includes `timeoutMs`. For an MV2 `allFrames` timeout, `missingCount` reports how many injected frames did not answer. Partial per-frame outcomes remain ordinary sibling elements in the returned result array instead of being duplicated inside the timeout error.
 
 ## Return application-level errors as data
 
@@ -243,8 +263,8 @@ const outcomes = await injector.run(
 This produces two intentionally separate levels:
 
 ```text
-InjectScriptResult.status  -> Was the frame execution observable and valid?
-RemoteResult.ok            -> Did the application operation succeed?
+InjectScriptResult.success  -> Did injection and callback execution succeed?
+RemoteResult.ok             -> Did the application operation succeed?
 ```
 
 ## Pass and return plain data
@@ -369,28 +389,45 @@ const injector = isManifestVersion3()
     });
 ```
 
-## Handle operation failures
+## Handle failures
 
-Frame-level failures belong in the resolved outcome array. Preparation, delivery, capability, and overall timeout failures reject the operation.
+Target-level failures from `run()` belong in the resolved outcome array:
 
 ```ts
-import {
-  InjectScriptBaseError,
-  InjectScriptTimeoutError,
-} from "@addon-core/inject-script";
+import {InjectScriptTargetErrorKind} from "@addon-core/inject-script";
+
+const outcomes = await injectScript({
+  target: {tabId: 123, frameIds: [7, 2, 9]},
+  timeoutMs: 5_000,
+}).run(() => location.href);
+
+for (const outcome of outcomes) {
+  if (outcome.success) {
+    console.log(outcome.target, outcome.value);
+    continue;
+  }
+
+  if (outcome.error.kind === InjectScriptTargetErrorKind.TargetGone) {
+    console.warn("Target disappeared", outcome.target);
+  } else {
+    console.error(outcome.target, outcome.error);
+  }
+}
+```
+
+`run()` can still reject when the request itself is invalid or unsupported, for example because arguments are not JSON-compatible or MV2 receives `documentIds`. These are preparation or capability errors, not failures of one requested target.
+
+Known adapter limitations are rejected before injection. A browser-specific capability error discovered only from the native MV3 call is different: all explicit calls have already been started to preserve user activation, so callbacks may have completed in some targets before `run()` rejects. For callbacks with side effects, do not interpret such a rejection as proof that nothing executed.
+
+`file()` remains a strict `Promise<void>` operation because native browser APIs do not expose a portable per-target file result. Its delivery and timeout failures reject:
+
+```ts
+import {InjectScriptBaseError} from "@addon-core/inject-script";
 
 try {
-  const outcomes = await injector.run(() => document.title);
-  consume(outcomes);
+  await injector.file("scripts/content.js");
 } catch (error) {
-  if (error instanceof InjectScriptTimeoutError) {
-    console.error("Injection timed out", {
-      target: error.target,
-      timeoutMs: error.timeoutMs,
-      partialResults: error.partialResults,
-      missingCount: error.missingCount,
-    });
-  } else if (error instanceof InjectScriptBaseError) {
+  if (error instanceof InjectScriptBaseError) {
     console.error(error.code, error.message, error.cause);
   } else {
     throw error;
@@ -402,12 +439,12 @@ Every package error extends `InjectScriptBaseError` and exposes a stable `code`.
 
 ### Cross-browser outcome details
 
-- Firefox can expose a literal `throw undefined` as an existing `error` property whose value is `undefined`. The package preserves it as `rejected`.
+- Firefox can expose a literal `throw undefined` as an existing `error` property whose value is `undefined`. The package preserves it as an `Execution` failure.
 - A defined `result` takes precedence over an `error: undefined` placeholder.
-- MV2 can identify an unsupported callback result of `undefined` and returns a frame-level `TypeError`.
-- If MV3 exposes neither `result` nor `error`, the outcome is `unknown`; the package does not guess whether the callback returned nothing or the browser omitted an exception.
-- For MV2 top-frame and explicit `frameIds` calls, a known frame that does not answer before `timeoutMs` becomes `unknown`.
-- For MV2 `allFrames`, a missing response cannot be assigned to a frame without another permission-dependent API. The operation rejects with `InjectScriptTimeoutError` and preserves `partialResults` and `missingCount`.
+- MV2 can identify an unsupported callback result of `undefined` and returns an `Execution` failure with `TypeError`.
+- If MV3 exposes neither a usable `result` nor an observable error, the package returns an `Unobservable` failure. Chrome MV3 does not always expose the exact callback exception, so exact automatic exception serialization cannot be guaranteed there.
+- For top-frame and explicit-target calls, a target that does not answer before `timeoutMs` returns a `Timeout` failure for that target.
+- For MV2 `allFrames`, a missing response cannot be assigned to a frame without another permission-dependent API. The result keeps every observed per-frame outcome and adds one `Timeout` failure with `target: {tabId, allFrames: true}`.
 
 Return `null` or an explicit application envelope when the caller must distinguish a successful no-value result from an unavailable native outcome.
 
@@ -461,6 +498,7 @@ interface InjectScriptOptions {
 
 ```ts
 injectScript
+InjectScriptTargetErrorKind
 InjectScriptBaseError
 InjectScriptDeliveryError
 InjectScriptTimeoutError
@@ -483,9 +521,12 @@ InjectScriptExecutionOptions
 InjectScriptTarget
 InjectScriptResult
 InjectScriptResultTarget
+InjectScriptTargetError
+InjectScriptTargetFailure
+InjectScriptTargetSuccess
+InjectScriptTargetTimeoutError
 SerializedInjectScriptError
 InjectScriptErrorCode
-InjectScriptTimeoutDetails
 ```
 
 Advanced target and JSON types:
